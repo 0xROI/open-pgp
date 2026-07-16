@@ -1,0 +1,955 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cipher Bureau — OpenPGP Encrypt / Decrypt</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/openpgp/6.2.2/openpgp.min.js"></script>
+<style>
+  :root{
+    --bg:#0d1310;
+    --bg-raise:#12180f;
+    --panel:#161d19;
+    --panel-raised:#1c2521;
+    --border:#2b362f;
+    --border-soft:#212a24;
+    --brass:#c9a13b;
+    --brass-dim:#8a712c;
+    --signal:#4fb8a6;
+    --alert:#c0563f;
+    --text:#eae6d9;
+    --text-muted:#8b9089;
+    --text-faint:#5c645d;
+    --radius:2px;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --display: 'Space Mono', ui-monospace, monospace;
+    --body: 'IBM Plex Sans', system-ui, sans-serif;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
+  body{
+    background:
+      radial-gradient(ellipse at top left, rgba(201,161,59,0.05), transparent 45%),
+      var(--bg);
+    color:var(--text);
+    font-family:var(--body);
+    line-height:1.5;
+    min-height:100vh;
+  }
+  *:focus-visible{ outline:2px solid var(--signal); outline-offset:2px; }
+
+  h1,h2,h3{ font-family:var(--display); font-weight:700; margin:0; letter-spacing:-0.01em; }
+  p{ margin:0; }
+  button{ font-family:var(--body); cursor:pointer; }
+  textarea, input, select{ font-family:var(--mono); }
+
+  /* ---------- layout shell ---------- */
+  .wrap{ max-width:1180px; margin:0 auto; padding:28px 24px 60px; }
+
+  .topbar{
+    display:flex; justify-content:space-between; align-items:flex-end; gap:24px;
+    flex-wrap:wrap;
+    border-bottom:1px solid var(--border);
+    padding-bottom:22px; margin-bottom:26px;
+  }
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:0.18em; text-transform:uppercase;
+    color:var(--brass); display:block; margin-bottom:10px;
+  }
+  .topbar h1{ font-size:26px; color:var(--text); }
+  .lede{ color:var(--text-muted); font-size:14px; margin-top:8px; max-width:46ch; }
+
+  .status{
+    display:flex; align-items:center; gap:8px;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.06em; text-transform:uppercase;
+    color:var(--text-muted); white-space:nowrap; padding-bottom:4px;
+  }
+  .status-dot{
+    width:8px; height:8px; border-radius:50%; background:var(--signal);
+    box-shadow:0 0 0 3px rgba(79,184,166,0.15);
+    animation:pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse{
+    0%,100%{ opacity:1; } 50%{ opacity:0.35; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    .status-dot{ animation:none; }
+    *{ transition:none !important; animation-duration:0.001s !important; }
+  }
+
+  .layout{
+    display:grid;
+    grid-template-columns:300px 1fr;
+    gap:20px;
+    align-items:start;
+  }
+  @media (max-width:880px){
+    .layout{ grid-template-columns:1fr; }
+  }
+
+  /* ---------- shared panel chrome ---------- */
+  .panel-block{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+  }
+
+  /* ---------- key ring sidebar ---------- */
+  .keyring-panel{ padding:18px; }
+  .panel-head{ display:flex; justify-content:space-between; align-items:baseline; margin-bottom:14px; }
+  .panel-head h2{ font-size:14px; letter-spacing:0.04em; text-transform:uppercase; }
+  .count{ font-family:var(--mono); font-size:11px; color:var(--text-faint); }
+
+  .keyring-actions{ display:flex; gap:8px; margin-bottom:16px; }
+
+  .btn{
+    font-family:var(--mono); font-size:12px; letter-spacing:0.03em;
+    padding:9px 12px; border-radius:var(--radius); border:1px solid var(--border);
+    background:var(--panel-raised); color:var(--text);
+    transition:border-color .15s ease, color .15s ease, background .15s ease;
+  }
+  .btn:hover{ border-color:var(--brass-dim); color:var(--brass); }
+  .btn-primary{ background:var(--brass); border-color:var(--brass); color:#161005; font-weight:600; }
+  .btn-primary:hover{ background:#dcb24a; color:#161005; border-color:#dcb24a; }
+  .btn-ghost{ background:transparent; }
+  .btn-block{ width:100%; }
+  .btn-small{ padding:6px 9px; font-size:11px; }
+  .btn:disabled{ opacity:0.4; cursor:not-allowed; }
+  .btn-signal{ border-color:var(--signal); color:var(--signal); }
+  .btn-signal:hover{ background:rgba(79,184,166,0.1); }
+
+  .empty-state{
+    font-size:12.5px; color:var(--text-faint); border:1px dashed var(--border);
+    padding:16px; text-align:center; border-radius:var(--radius);
+  }
+
+  .keyring-list{ display:flex; flex-direction:column; gap:10px; max-height:340px; overflow-y:auto; }
+
+  .key-card{
+    background:var(--panel-raised); border:1px solid var(--border);
+    border-left:3px solid var(--brass);
+    padding:11px 12px; border-radius:var(--radius);
+  }
+  .key-card.no-private{ border-left-color:var(--text-faint); }
+  .key-card .kc-name{ font-size:13px; font-weight:600; word-break:break-word; }
+  .key-card .kc-fp{
+    font-family:var(--mono); font-size:10.5px; color:var(--text-muted);
+    margin-top:5px; letter-spacing:0.03em; word-break:break-all;
+  }
+  .kc-badges{ display:flex; gap:5px; margin-top:7px; flex-wrap:wrap; }
+  .badge{
+    font-family:var(--mono); font-size:9.5px; letter-spacing:0.06em; text-transform:uppercase;
+    padding:2px 6px; border:1px solid var(--border); border-radius:2px; color:var(--text-muted);
+  }
+  .badge.has-private{ color:var(--signal); border-color:rgba(79,184,166,0.4); }
+  .kc-actions{ display:flex; gap:6px; margin-top:9px; flex-wrap:wrap; }
+
+  /* drawers */
+  .drawer{
+    margin-top:16px; padding-top:16px; border-top:1px solid var(--border-soft);
+  }
+  .drawer h3{ font-size:12px; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:12px; color:var(--brass); }
+  .field{ margin-bottom:11px; }
+  .field label{
+    display:block; font-family:var(--mono); font-size:10.5px; letter-spacing:0.04em;
+    text-transform:uppercase; color:var(--text-muted); margin-bottom:5px;
+  }
+  .field input[type=text], .field input[type=email], .field input[type=password], .field textarea{
+    width:100%; background:var(--bg-raise); border:1px solid var(--border); color:var(--text);
+    padding:9px 10px; border-radius:var(--radius); font-size:12.5px;
+  }
+  .field textarea{ resize:vertical; min-height:90px; font-size:11.5px; line-height:1.5; }
+  .field-hint{ font-size:11px; color:var(--text-faint); margin-top:5px; }
+  .drawer-actions{ display:flex; gap:8px; margin-top:6px; }
+  .drawer-error{
+    font-size:12px; color:var(--alert); margin-top:8px; display:none;
+    padding:8px 10px; border:1px solid rgba(192,86,63,0.4); border-radius:var(--radius);
+  }
+  .drawer-error.show{ display:block; }
+
+  /* ---------- workbench ---------- */
+  .workbench{ padding:18px; }
+
+  .tabs{ display:flex; gap:2px; border:1px solid var(--border); border-radius:var(--radius); width:max-content; margin-bottom:14px; }
+  .tab{
+    background:transparent; border:none; color:var(--text-muted);
+    font-family:var(--mono); font-size:12px; letter-spacing:0.05em; text-transform:uppercase;
+    padding:8px 18px;
+  }
+  .tab.active{ background:var(--panel-raised); color:var(--brass); }
+
+  .mode-toggle{ display:flex; gap:8px; margin-bottom:20px; }
+  .mode{
+    background:var(--panel-raised); border:1px solid var(--border); color:var(--text-muted);
+    font-family:var(--mono); font-size:11.5px; letter-spacing:0.05em; text-transform:uppercase;
+    padding:7px 14px; border-radius:var(--radius);
+  }
+  .mode.active{ border-color:var(--signal); color:var(--signal); }
+
+  .op{ display:flex; flex-direction:column; gap:16px; }
+
+  .recipients-box{
+    border:1px solid var(--border); border-radius:var(--radius); padding:10px;
+    max-height:150px; overflow-y:auto; background:var(--bg-raise);
+  }
+  .recipient-row{ display:flex; align-items:center; gap:9px; padding:6px 4px; font-size:12.5px; }
+  .recipient-row label{ display:flex; align-items:center; gap:8px; cursor:pointer; width:100%; }
+  .recipient-row .r-fp{ color:var(--text-faint); font-family:var(--mono); font-size:10px; margin-left:auto; }
+
+  .inline-fields{ display:flex; gap:12px; flex-wrap:wrap; }
+  .inline-fields .field{ flex:1; min-width:180px; }
+
+  select{
+    width:100%; background:var(--bg-raise); border:1px solid var(--border); color:var(--text);
+    padding:9px 10px; border-radius:var(--radius); font-size:12.5px;
+  }
+
+  .dropzone{
+    border:1px dashed var(--border); border-radius:var(--radius); padding:26px 16px;
+    text-align:center; color:var(--text-muted); font-size:12.5px; background:var(--bg-raise);
+    transition:border-color .15s ease;
+  }
+  .dropzone.drag-over{ border-color:var(--signal); color:var(--signal); }
+  .dropzone strong{ color:var(--text); }
+  .dropzone input[type=file]{ display:none; }
+  .file-picked{
+    margin-top:10px; font-family:var(--mono); font-size:11.5px; color:var(--signal);
+    display:none;
+  }
+  .file-picked.show{ display:block; }
+
+  .run-row{ display:flex; align-items:center; gap:12px; }
+  .op-error{
+    font-size:12.5px; color:var(--alert); padding:9px 11px; border:1px solid rgba(192,86,63,0.4);
+    border-radius:var(--radius); display:none;
+  }
+  .op-error.show{ display:block; }
+  .op-success{
+    font-size:12.5px; color:var(--signal); padding:9px 11px; border:1px solid rgba(79,184,166,0.4);
+    border-radius:var(--radius); display:none;
+  }
+  .op-success.show{ display:block; }
+
+  /* ---------- armored output "ticket" ---------- */
+  .armor-wrap{ display:none; margin-top:2px; }
+  .armor-wrap.show{ display:block; }
+  .ticket-label{
+    display:inline-block; font-family:var(--mono); font-size:10px; letter-spacing:0.1em;
+    text-transform:uppercase; color:var(--bg); background:var(--brass);
+    padding:3px 9px; position:relative; left:14px; top:1px; z-index:2; border-radius:2px 2px 0 0;
+  }
+  .armor-block{
+    position:relative; background:var(--panel-raised); border:1px solid var(--border);
+    padding:22px 16px 24px; margin-top:0;
+  }
+  .armor-block::before, .armor-block::after{
+    content:""; position:absolute; left:0; right:0; height:9px;
+    background-image:radial-gradient(circle at 8px 4px, var(--bg) 4px, transparent 4.5px);
+    background-size:16px 9px; background-repeat:repeat-x;
+  }
+  .armor-block::before{ top:-5px; }
+  .armor-block::after{ bottom:-5px; transform:rotate(180deg); }
+  .armor-text{
+    font-family:var(--mono); font-size:11.5px; line-height:1.6; color:var(--text);
+    white-space:pre-wrap; word-break:break-all; max-height:260px; overflow-y:auto; margin:0;
+  }
+  .armor-actions{ display:flex; gap:8px; margin-top:12px; }
+
+  footer{
+    margin-top:40px; padding-top:18px; border-top:1px solid var(--border);
+    font-size:11.5px; color:var(--text-faint); display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  }
+  footer a{ color:var(--text-muted); }
+
+  ::-webkit-scrollbar{ width:8px; height:8px; }
+  ::-webkit-scrollbar-track{ background:transparent; }
+  ::-webkit-scrollbar-thumb{ background:var(--border); border-radius:4px; }
+
+  [hidden]{ display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="topbar">
+    <div>
+      <span class="eyebrow">No. 001 — Cipher Bureau</span>
+      <h1>Encrypt &amp; decrypt with OpenPGP</h1>
+      <p class="lede">Generate or import keys, then encrypt and decrypt messages and files. Everything runs in this browser tab — nothing is uploaded anywhere.</p>
+    </div>
+    <div class="status"><span class="status-dot" aria-hidden="true"></span> local processing only</div>
+  </header>
+
+  <main class="layout">
+
+    <!-- ============ KEY RING ============ -->
+    <aside class="keyring-panel panel-block">
+      <div class="panel-head">
+        <h2>Key ring</h2>
+        <span class="count" id="key-count">0 keys</span>
+      </div>
+
+      <div class="keyring-actions">
+        <button class="btn btn-primary btn-block" id="btn-open-generate">Generate keypair</button>
+        <button class="btn btn-ghost btn-block" id="btn-open-import">Import key</button>
+      </div>
+
+      <div id="keyring-list" class="keyring-list">
+        <p class="empty-state">No keys yet. Generate one or import an existing key to get started.</p>
+      </div>
+
+      <!-- Generate drawer -->
+      <div class="drawer" id="drawer-generate" hidden>
+        <h3>Generate a keypair</h3>
+        <div class="field">
+          <label for="gen-name">Name</label>
+          <input type="text" id="gen-name" placeholder="Sakib">
+        </div>
+        <div class="field">
+          <label for="gen-email">Email</label>
+          <input type="email" id="gen-email" placeholder="you@example.com">
+        </div>
+        <div class="field">
+          <label for="gen-passphrase">Passphrase</label>
+          <input type="password" id="gen-passphrase" placeholder="Protects the private key">
+          <p class="field-hint">Leave blank to generate an unprotected key (not recommended).</p>
+        </div>
+        <div class="drawer-actions">
+          <button class="btn btn-primary" id="btn-do-generate">Generate</button>
+          <button class="btn btn-ghost" id="btn-cancel-generate">Cancel</button>
+        </div>
+        <p class="drawer-error" id="generate-error"></p>
+      </div>
+
+      <!-- Import drawer -->
+      <div class="drawer" id="drawer-import" hidden>
+        <h3>Import a key</h3>
+        <div class="field">
+          <label for="import-text">Paste an armored key block</label>
+          <textarea id="import-text" placeholder="-----BEGIN PGP PUBLIC KEY BLOCK-----&#10;or&#10;-----BEGIN PGP PRIVATE KEY BLOCK-----"></textarea>
+        </div>
+        <div class="field">
+          <label for="import-file">Or choose a .asc / .gpg / .pgp file</label>
+          <input type="file" id="import-file" accept=".asc,.gpg,.pgp,.key,.txt">
+        </div>
+        <div class="drawer-actions">
+          <button class="btn btn-primary" id="btn-do-import">Import</button>
+          <button class="btn btn-ghost" id="btn-cancel-import">Cancel</button>
+        </div>
+        <p class="drawer-error" id="import-error"></p>
+      </div>
+    </aside>
+
+    <!-- ============ WORKBENCH ============ -->
+    <section class="workbench panel-block">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="message" role="tab">Message</button>
+        <button class="tab" data-tab="file" role="tab">File</button>
+      </div>
+
+      <div class="mode-toggle">
+        <button class="mode active" data-mode="encrypt">Encrypt</button>
+        <button class="mode" data-mode="decrypt">Decrypt</button>
+      </div>
+
+      <!-- ---- MESSAGE / ENCRYPT ---- -->
+      <div class="op" id="op-message-encrypt">
+        <div class="field">
+          <label>Recipients (public keys)</label>
+          <div class="recipients-box" id="msg-enc-recipients"><p class="empty-state">No keys in the ring yet.</p></div>
+        </div>
+        <div class="inline-fields">
+          <div class="field">
+            <label for="msg-enc-sign-key">Also sign with (optional)</label>
+            <select id="msg-enc-sign-key"><option value="">Don't sign</option></select>
+          </div>
+          <div class="field" id="msg-enc-sign-pass-wrap" hidden>
+            <label for="msg-enc-sign-pass">Signing key passphrase</label>
+            <input type="password" id="msg-enc-sign-pass">
+          </div>
+        </div>
+        <div class="field">
+          <label for="msg-enc-input">Plaintext message</label>
+          <textarea id="msg-enc-input" style="min-height:130px" placeholder="Write the message to encrypt..."></textarea>
+        </div>
+        <div class="run-row">
+          <button class="btn btn-primary" id="msg-enc-run">Encrypt message</button>
+        </div>
+        <p class="op-error" id="msg-enc-error"></p>
+        <div class="armor-wrap" id="msg-enc-output-wrap">
+          <span class="ticket-label">Sealed output</span>
+          <div class="armor-block">
+            <pre class="armor-text" id="msg-enc-output"></pre>
+            <div class="armor-actions">
+              <button class="btn btn-small btn-signal" id="msg-enc-copy">Copy ciphertext</button>
+              <button class="btn btn-small" id="msg-enc-download">Download .asc</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- MESSAGE / DECRYPT ---- -->
+      <div class="op" id="op-message-decrypt" hidden>
+        <div class="field">
+          <label for="msg-dec-input">Armored ciphertext</label>
+          <textarea id="msg-dec-input" style="min-height:130px" placeholder="-----BEGIN PGP MESSAGE-----"></textarea>
+        </div>
+        <div class="inline-fields">
+          <div class="field">
+            <label for="msg-dec-key">Decrypt with</label>
+            <select id="msg-dec-key"><option value="">No private keys available</option></select>
+          </div>
+          <div class="field">
+            <label for="msg-dec-pass">Passphrase</label>
+            <input type="password" id="msg-dec-pass">
+          </div>
+        </div>
+        <div class="run-row">
+          <button class="btn btn-primary" id="msg-dec-run">Decrypt message</button>
+        </div>
+        <p class="op-error" id="msg-dec-error"></p>
+        <div class="armor-wrap" id="msg-dec-output-wrap">
+          <span class="ticket-label" style="background:var(--signal);">Recovered plaintext</span>
+          <div class="armor-block">
+            <pre class="armor-text" id="msg-dec-output"></pre>
+            <div class="armor-actions">
+              <button class="btn btn-small btn-signal" id="msg-dec-copy">Copy plaintext</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- FILE / ENCRYPT ---- -->
+      <div class="op" id="op-file-encrypt" hidden>
+        <div class="field">
+          <label>Recipients (public keys)</label>
+          <div class="recipients-box" id="file-enc-recipients"><p class="empty-state">No keys in the ring yet.</p></div>
+        </div>
+        <div class="inline-fields">
+          <div class="field">
+            <label for="file-enc-sign-key">Also sign with (optional)</label>
+            <select id="file-enc-sign-key"><option value="">Don't sign</option></select>
+          </div>
+          <div class="field" id="file-enc-sign-pass-wrap" hidden>
+            <label for="file-enc-sign-pass">Signing key passphrase</label>
+            <input type="password" id="file-enc-sign-pass">
+          </div>
+        </div>
+        <div class="field">
+          <label>File to encrypt</label>
+          <div class="dropzone" id="file-enc-dropzone">
+            <strong>Drop a file here</strong> or <u>click to browse</u>
+            <input type="file" id="file-enc-input">
+            <div class="file-picked" id="file-enc-picked"></div>
+          </div>
+        </div>
+        <div class="run-row">
+          <button class="btn btn-primary" id="file-enc-run">Encrypt file</button>
+        </div>
+        <p class="op-error" id="file-enc-error"></p>
+        <p class="op-success" id="file-enc-success"></p>
+      </div>
+
+      <!-- ---- FILE / DECRYPT ---- -->
+      <div class="op" id="op-file-decrypt" hidden>
+        <div class="field">
+          <label>Encrypted file (.gpg / .pgp / .asc)</label>
+          <div class="dropzone" id="file-dec-dropzone">
+            <strong>Drop an encrypted file here</strong> or <u>click to browse</u>
+            <input type="file" id="file-dec-input">
+            <div class="file-picked" id="file-dec-picked"></div>
+          </div>
+        </div>
+        <div class="inline-fields">
+          <div class="field">
+            <label for="file-dec-key">Decrypt with</label>
+            <select id="file-dec-key"><option value="">No private keys available</option></select>
+          </div>
+          <div class="field">
+            <label for="file-dec-pass">Passphrase</label>
+            <input type="password" id="file-dec-pass">
+          </div>
+        </div>
+        <div class="run-row">
+          <button class="btn btn-primary" id="file-dec-run">Decrypt file</button>
+        </div>
+        <p class="op-error" id="file-dec-error"></p>
+        <p class="op-success" id="file-dec-success"></p>
+      </div>
+
+    </section>
+  </main>
+
+  <footer>
+    <span>Cipher Bureau — built on OpenPGP.js (RFC 9580). Keys live in this tab's memory only and are cleared on reload.</span>
+    <span>Back up any key you can't afford to lose.</span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------- state ---------------- */
+  let keyring = []; // { id, fingerprint, label, publicArmored, privateArmored, hasPrivate }
+  let pickedFile = { "file-enc": null, "file-dec": null };
+
+  const $ = (id) => document.getElementById(id);
+  const uid = () => Math.random().toString(36).slice(2, 10);
+
+  function formatFingerprint(fp){
+    return fp.toUpperCase().match(/.{1,4}/g).join(" ");
+  }
+
+  function showError(el, message){
+    el.textContent = message;
+    el.classList.add("show");
+  }
+  function hideError(el){
+    el.textContent = "";
+    el.classList.remove("show");
+  }
+  function showSuccess(el, message){
+    el.textContent = message;
+    el.classList.add("show");
+  }
+  function hideSuccess(el){
+    el.textContent = "";
+    el.classList.remove("show");
+  }
+
+  function friendlyError(e){
+    const msg = (e && e.message) ? e.message : String(e);
+    if (/Incorrect key passphrase/i.test(msg)) return "Wrong passphrase — this private key could not be unlocked.";
+    if (/Misformed armored text|Invalid|Error reading/i.test(msg)) return "This doesn't look like a valid OpenPGP block.";
+    if (/decryption failed/i.test(msg)) return "Decryption failed. Wrong key, or the ciphertext is corrupted.";
+    return msg;
+  }
+
+  function downloadBlob(data, filename, mime){
+    const blob = new Blob([data], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
+  async function copyText(text, btn){
+    const original = btn.textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch(e){
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = original; }, 1400);
+  }
+
+  /* ---------------- key ring rendering ---------------- */
+  function addOrMergeKey(entry){
+    const existing = keyring.find(k => k.fingerprint === entry.fingerprint);
+    if (existing){
+      if (entry.privateArmored){ existing.privateArmored = entry.privateArmored; existing.hasPrivate = true; }
+      if (!existing.publicArmored && entry.publicArmored) existing.publicArmored = entry.publicArmored;
+      if (entry.label) existing.label = entry.label;
+    } else {
+      entry.id = uid();
+      keyring.push(entry);
+    }
+    renderKeyring();
+  }
+
+  function removeKey(id){
+    keyring = keyring.filter(k => k.id !== id);
+    renderKeyring();
+  }
+
+  function renderKeyring(){
+    $("key-count").textContent = keyring.length + (keyring.length === 1 ? " key" : " keys");
+    const list = $("keyring-list");
+    list.innerHTML = "";
+    if (keyring.length === 0){
+      list.innerHTML = '<p class="empty-state">No keys yet. Generate one or import an existing key to get started.</p>';
+    } else {
+      keyring.forEach(k => {
+        const card = document.createElement("div");
+        card.className = "key-card" + (k.hasPrivate ? "" : " no-private");
+        card.innerHTML =
+          '<div class="kc-name">' + escapeHtml(k.label) + '</div>' +
+          '<div class="kc-fp">' + formatFingerprint(k.fingerprint) + '</div>' +
+          '<div class="kc-badges">' +
+            '<span class="badge">public</span>' +
+            (k.hasPrivate ? '<span class="badge has-private">private</span>' : '') +
+          '</div>' +
+          '<div class="kc-actions">' +
+            '<button class="btn btn-small" data-act="copy-fp" data-id="' + k.id + '">Copy fingerprint</button>' +
+            '<button class="btn btn-small" data-act="dl-pub" data-id="' + k.id + '">Public key</button>' +
+            (k.hasPrivate ? '<button class="btn btn-small" data-act="dl-priv" data-id="' + k.id + '">Private key</button>' : '') +
+            '<button class="btn btn-small" data-act="remove" data-id="' + k.id + '">Remove</button>' +
+          '</div>';
+        list.appendChild(card);
+      });
+    }
+    populateRecipientBoxes();
+    populateSignSelects();
+    populateDecryptSelects();
+  }
+
+  function escapeHtml(str){
+    const d = document.createElement("div");
+    d.textContent = str;
+    return d.innerHTML;
+  }
+
+  $("keyring-list").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-act]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    const key = keyring.find(k => k.id === id);
+    if (!key) return;
+    if (btn.dataset.act === "copy-fp") copyText(formatFingerprint(key.fingerprint), btn);
+    if (btn.dataset.act === "dl-pub") downloadBlob(key.publicArmored, safeFilename(key.label) + "_public.asc", "application/pgp-keys");
+    if (btn.dataset.act === "dl-priv") downloadBlob(key.privateArmored, safeFilename(key.label) + "_private.asc", "application/pgp-keys");
+    if (btn.dataset.act === "remove") removeKey(id);
+  });
+
+  function safeFilename(str){
+    return str.replace(/[^a-z0-9]+/gi, "_").slice(0, 40) || "key";
+  }
+
+  /* ---------------- recipient / signer / decrypt selects ---------------- */
+  function populateRecipientBoxes(){
+    ["msg-enc-recipients", "file-enc-recipients"].forEach(id => {
+      const box = $(id);
+      if (keyring.length === 0){
+        box.innerHTML = '<p class="empty-state">No keys in the ring yet.</p>';
+        return;
+      }
+      box.innerHTML = keyring.map(k =>
+        '<div class="recipient-row"><label>' +
+          '<input type="checkbox" value="' + k.id + '" class="recipient-check"> ' +
+          escapeHtml(k.label) +
+          '<span class="r-fp">' + k.fingerprint.slice(-8).toUpperCase() + '</span>' +
+        '</label></div>'
+      ).join("");
+    });
+  }
+
+  function populateSignSelects(){
+    ["msg-enc-sign-key", "file-enc-sign-key"].forEach(id => {
+      const sel = $(id);
+      const current = sel.value;
+      sel.innerHTML = '<option value="">Skip signing</option>' +
+        keyring.filter(k => k.hasPrivate).map(k =>
+          '<option value="' + k.id + '">' + escapeHtml(k.label) + '</option>'
+        ).join("");
+      sel.value = keyring.find(k => k.id === current) ? current : "";
+    });
+  }
+
+  function populateDecryptSelects(){
+    ["msg-dec-key", "file-dec-key"].forEach(id => {
+      const sel = $(id);
+      const current = sel.value;
+      const privKeys = keyring.filter(k => k.hasPrivate);
+      sel.innerHTML = privKeys.length
+        ? privKeys.map(k => '<option value="' + k.id + '">' + escapeHtml(k.label) + '</option>').join("")
+        : '<option value="">No private keys available</option>';
+      sel.value = keyring.find(k => k.id === current && k.hasPrivate) ? current : sel.value;
+    });
+  }
+
+  ["msg-enc-sign-key", "file-enc-sign-key"].forEach(id => {
+    $(id).addEventListener("change", (ev) => {
+      const wrapId = id === "msg-enc-sign-key" ? "msg-enc-sign-pass-wrap" : "file-enc-sign-pass-wrap";
+      $(wrapId).hidden = !ev.target.value;
+    });
+  });
+
+  /* ---------------- drawers ---------------- */
+  function closeDrawers(){
+    $("drawer-generate").hidden = true;
+    $("drawer-import").hidden = true;
+    hideError($("generate-error"));
+    hideError($("import-error"));
+  }
+  $("btn-open-generate").addEventListener("click", () => { closeDrawers(); $("drawer-generate").hidden = false; });
+  $("btn-open-import").addEventListener("click", () => { closeDrawers(); $("drawer-import").hidden = false; });
+  $("btn-cancel-generate").addEventListener("click", closeDrawers);
+  $("btn-cancel-import").addEventListener("click", closeDrawers);
+
+  $("btn-do-generate").addEventListener("click", async () => {
+    const errEl = $("generate-error");
+    hideError(errEl);
+    const name = $("gen-name").value.trim();
+    const email = $("gen-email").value.trim();
+    const passphrase = $("gen-passphrase").value;
+    if (!name || !email){ showError(errEl, "Name and email are both required."); return; }
+    const btn = $("btn-do-generate");
+    btn.disabled = true; btn.textContent = "Generating…";
+    try {
+      const { privateKey, publicKey } = await openpgp.generateKey({
+        type: "ecc",
+        curve: "curve25519",
+        userIDs: [{ name, email }],
+        passphrase: passphrase || undefined,
+        format: "armored"
+      });
+      const pubKeyObj = await openpgp.readKey({ armoredKey: publicKey });
+      addOrMergeKey({
+        fingerprint: pubKeyObj.getFingerprint(),
+        label: name + " <" + email + ">",
+        publicArmored: publicKey,
+        privateArmored: privateKey,
+        hasPrivate: true
+      });
+      $("gen-name").value = ""; $("gen-email").value = ""; $("gen-passphrase").value = "";
+      closeDrawers();
+    } catch(e){
+      showError(errEl, friendlyError(e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Generate";
+    }
+  });
+
+  async function importArmoredText(armoredText){
+    armoredText = armoredText.trim();
+    if (!armoredText) throw new Error("Paste or choose an armored key block first.");
+    const isPrivate = /PRIVATE KEY BLOCK/.test(armoredText);
+    let pubArmored, privArmored = null, meta;
+    if (isPrivate){
+      const privKeyObj = await openpgp.readPrivateKey({ armoredKey: armoredText });
+      privArmored = armoredText;
+      pubArmored = privKeyObj.toPublic().armor();
+      meta = privKeyObj;
+    } else {
+      const pubKeyObj = await openpgp.readKey({ armoredKey: armoredText });
+      pubArmored = armoredText;
+      meta = pubKeyObj;
+    }
+    const uids = meta.getUserIDs();
+    addOrMergeKey({
+      fingerprint: meta.getFingerprint(),
+      label: uids[0] || "Unlabeled key",
+      publicArmored: pubArmored,
+      privateArmored: privArmored,
+      hasPrivate: !!privArmored
+    });
+  }
+
+  $("btn-do-import").addEventListener("click", async () => {
+    const errEl = $("import-error");
+    hideError(errEl);
+    const btn = $("btn-do-import");
+    btn.disabled = true; btn.textContent = "Importing…";
+    try {
+      const fileInput = $("import-file");
+      let text = $("import-text").value;
+      if (fileInput.files && fileInput.files[0]){
+        text = await fileInput.files[0].text();
+      }
+      await importArmoredText(text);
+      $("import-text").value = "";
+      fileInput.value = "";
+      closeDrawers();
+    } catch(e){
+      showError(errEl, friendlyError(e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Import";
+    }
+  });
+
+  /* ---------------- tabs / mode toggle ---------------- */
+  const opPanels = {
+    "message-encrypt": $("op-message-encrypt"),
+    "message-decrypt": $("op-message-decrypt"),
+    "file-encrypt": $("op-file-encrypt"),
+    "file-decrypt": $("op-file-decrypt")
+  };
+  let activeTab = "message", activeMode = "encrypt";
+
+  function renderActiveOp(){
+    Object.keys(opPanels).forEach(key => { opPanels[key].hidden = true; });
+    opPanels[activeTab + "-" + activeMode].hidden = false;
+  }
+
+  document.querySelectorAll(".tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeTab = btn.dataset.tab;
+      renderActiveOp();
+    });
+  });
+  document.querySelectorAll(".mode").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".mode").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeMode = btn.dataset.mode;
+      renderActiveOp();
+    });
+  });
+
+  /* ---------------- shared crypto helpers ---------------- */
+  function getSelectedRecipients(boxId){
+    return Array.from(document.querySelectorAll("#" + boxId + " .recipient-check:checked"))
+      .map(cb => keyring.find(k => k.id === cb.value))
+      .filter(Boolean);
+  }
+
+  async function unlockPrivateKey(entry, passphrase){
+    const keyObj = await openpgp.readPrivateKey({ armoredKey: entry.privateArmored });
+    if (keyObj.isDecrypted()) return keyObj;
+    return await openpgp.decryptKey({ privateKey: keyObj, passphrase });
+  }
+
+  async function buildSigningKeys(selectId, passInputId){
+    const signerId = $(selectId).value;
+    if (!signerId) return undefined;
+    const entry = keyring.find(k => k.id === signerId);
+    const unlocked = await unlockPrivateKey(entry, $(passInputId).value);
+    return [unlocked];
+  }
+
+  /* ---------------- MESSAGE: encrypt ---------------- */
+  $("msg-enc-run").addEventListener("click", async () => {
+    const errEl = $("msg-enc-error");
+    hideError(errEl);
+    $("msg-enc-output-wrap").classList.remove("show");
+    const plaintext = $("msg-enc-input").value;
+    const recipients = getSelectedRecipients("msg-enc-recipients");
+    if (!plaintext.trim()){ showError(errEl, "Write a message to encrypt first."); return; }
+    if (recipients.length === 0){ showError(errEl, "Select at least one recipient."); return; }
+    const btn = $("msg-enc-run");
+    btn.disabled = true; btn.textContent = "Encrypting…";
+    try {
+      const encryptionKeys = await Promise.all(recipients.map(r => openpgp.readKey({ armoredKey: r.publicArmored })));
+      const signingKeys = await buildSigningKeys("msg-enc-sign-key", "msg-enc-sign-pass");
+      const message = await openpgp.createMessage({ text: plaintext });
+      const encrypted = await openpgp.encrypt({ message, encryptionKeys, signingKeys });
+      $("msg-enc-output").textContent = encrypted;
+      $("msg-enc-output-wrap").classList.add("show");
+    } catch(e){
+      showError(errEl, friendlyError(e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Encrypt message";
+    }
+  });
+  $("msg-enc-copy").addEventListener("click", (ev) => copyText($("msg-enc-output").textContent, ev.target));
+  $("msg-enc-download").addEventListener("click", () => downloadBlob($("msg-enc-output").textContent, "message.asc", "application/pgp-encrypted"));
+
+  /* ---------------- MESSAGE: decrypt ---------------- */
+  $("msg-dec-run").addEventListener("click", async () => {
+    const errEl = $("msg-dec-error");
+    hideError(errEl);
+    $("msg-dec-output-wrap").classList.remove("show");
+    const ciphertext = $("msg-dec-input").value.trim();
+    const keyId = $("msg-dec-key").value;
+    if (!ciphertext){ showError(errEl, "Paste an armored PGP message first."); return; }
+    if (!keyId){ showError(errEl, "No private key available. Generate or import one first."); return; }
+    const entry = keyring.find(k => k.id === keyId);
+    const btn = $("msg-dec-run");
+    btn.disabled = true; btn.textContent = "Decrypting…";
+    try {
+      const unlocked = await unlockPrivateKey(entry, $("msg-dec-pass").value);
+      const msg = await openpgp.readMessage({ armoredMessage: ciphertext });
+      const { data } = await openpgp.decrypt({ message: msg, decryptionKeys: unlocked });
+      $("msg-dec-output").textContent = data;
+      $("msg-dec-output-wrap").classList.add("show");
+    } catch(e){
+      showError(errEl, friendlyError(e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Decrypt message";
+    }
+  });
+  $("msg-dec-copy").addEventListener("click", (ev) => copyText($("msg-dec-output").textContent, ev.target));
+
+  /* ---------------- FILE dropzones ---------------- */
+  function wireDropzone(prefix){
+    const zone = $(prefix + "-dropzone");
+    const input = $(prefix + "-input");
+    const picked = $(prefix + "-picked");
+
+    function setFile(file){
+      pickedFile[prefix] = file;
+      picked.textContent = file ? file.name + " — " + Math.ceil(file.size / 1024) + " KB" : "";
+      picked.classList.toggle("show", !!file);
+    }
+
+    zone.addEventListener("click", () => input.click());
+    input.addEventListener("change", () => setFile(input.files[0] || null));
+    zone.addEventListener("dragover", (ev) => { ev.preventDefault(); zone.classList.add("drag-over"); });
+    zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
+    zone.addEventListener("drop", (ev) => {
+      ev.preventDefault(); zone.classList.remove("drag-over");
+      const file = ev.dataTransfer.files[0];
+      if (file){ setFile(file); }
+    });
+  }
+  wireDropzone("file-enc");
+  wireDropzone("file-dec");
+
+  /* ---------------- FILE: encrypt ---------------- */
+  $("file-enc-run").addEventListener("click", async () => {
+    const errEl = $("file-enc-error"), okEl = $("file-enc-success");
+    hideError(errEl); hideSuccess(okEl);
+    const file = pickedFile["file-enc"];
+    const recipients = getSelectedRecipients("file-enc-recipients");
+    if (!file){ showError(errEl, "Choose a file to encrypt first."); return; }
+    if (recipients.length === 0){ showError(errEl, "Select at least one recipient."); return; }
+    const btn = $("file-enc-run");
+    btn.disabled = true; btn.textContent = "Encrypting…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const encryptionKeys = await Promise.all(recipients.map(r => openpgp.readKey({ armoredKey: r.publicArmored })));
+      const signingKeys = await buildSigningKeys("file-enc-sign-key", "file-enc-sign-pass");
+      const message = await openpgp.createMessage({ binary: bytes, filename: file.name });
+      const encrypted = await openpgp.encrypt({ message, encryptionKeys, signingKeys, format: "binary" });
+      downloadBlob(encrypted, file.name + ".gpg", "application/octet-stream");
+      showSuccess(okEl, "Encrypted. Download started: " + file.name + ".gpg");
+    } catch(e){
+      showError(errEl, friendlyError(e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Encrypt file";
+    }
+  });
+
+  /* ---------------- FILE: decrypt ---------------- */
+  $("file-dec-run").addEventListener("click", async () => {
+    const errEl = $("file-dec-error"), okEl = $("file-dec-success");
+    hideError(errEl); hideSuccess(okEl);
+    const file = pickedFile["file-dec"];
+    const keyId = $("file-dec-key").value;
+    if (!file){ showError(errEl, "Choose an encrypted file first."); return; }
+    if (!keyId){ showError(errEl, "No private key available. Generate or import one first."); return; }
+    const entry = keyring.find(k => k.id === keyId);
+    const btn = $("file-dec-run");
+    btn.disabled = true; btn.textContent = "Decrypting…";
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const unlocked = await unlockPrivateKey(entry, $("file-dec-pass").value);
+      const msg = await openpgp.readMessage({ binaryMessage: bytes });
+      const result = await openpgp.decrypt({ message: msg, decryptionKeys: unlocked, format: "binary" });
+      const outName = result.filename || file.name.replace(/\.(gpg|pgp|asc)$/i, "") || "decrypted_output";
+      downloadBlob(result.data, outName, "application/octet-stream");
+      showSuccess(okEl, "Decrypted. Download started: " + outName);
+    } catch(e){
+      showError(errEl, friendlyError(e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Decrypt file";
+    }
+  });
+
+  /* ---------------- init ---------------- */
+  renderKeyring();
+})();
+</script>
+</body>
+</html>
