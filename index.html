@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/openpgp/6.2.2/openpgp.min.js"></script>
+<script src="https://unpkg.com/openpgp@6/dist/openpgp.min.js"></script>
 <style>
   :root{
     --bg:#0d1310;
@@ -283,6 +283,8 @@
     </div>
     <div class="status"><span class="status-dot" aria-hidden="true"></span> local processing only</div>
   </header>
+
+  <div class="op-error" id="lib-load-error" style="margin-bottom:18px;"></div>
 
   <main class="layout">
 
@@ -948,7 +950,27 @@
   });
 
   /* ---------------- init ---------------- */
-  renderKeyring();
+  function verifyLibraryLoaded(){
+    if (typeof window.openpgp === "undefined"){
+      const banner = $("lib-load-error");
+      banner.classList.add("show");
+      banner.innerHTML =
+        "The OpenPGP.js library didn't load from the CDN, so nothing here will work yet. " +
+        "This is almost always a network/ad-blocker issue, not a bug in this page. Try: " +
+        "(1) check your internet connection, (2) allow <code>unpkg.com</code> (or try <code>cdn.jsdelivr.net</code>) in any ad-blocker, " +
+        "uBlock/NoScript, or corporate proxy, then (3) reload this page. " +
+        "If it still fails, download <a href=\"https://cdn.jsdelivr.net/npm/openpgp@6/dist/openpgp.min.js\" target=\"_blank\" rel=\"noopener\">openpgp.min.js</a> " +
+        "manually, place it next to this HTML file, and replace the &lt;script src=...&gt; tag near the top of this file with " +
+        "&lt;script src=\"openpgp.min.js\"&gt;&lt;/script&gt;.";
+      document.querySelectorAll("button, input, select, textarea").forEach(el => { el.disabled = true; });
+      return false;
+    }
+    return true;
+  }
+
+  if (verifyLibraryLoaded()){
+    renderKeyring();
+  }
 })();
 </script>
 </body>
