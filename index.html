@@ -275,6 +275,36 @@
   }
   footer a{ color:var(--text-muted); }
 
+  /* ---------- encryption status + modals ---------- */
+  .encryption-status{
+    display:flex; align-items:center; gap:8px; margin-bottom:12px;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.03em;
+  }
+  .encryption-status .enc-dot{ width:7px; height:7px; border-radius:50%; }
+  .encryption-status.on .enc-dot{ background:var(--signal); }
+  .encryption-status.off .enc-dot{ background:var(--text-faint); }
+  .encryption-status.on .enc-label{ color:var(--signal); }
+  .encryption-status.off .enc-label{ color:var(--text-faint); }
+  .encryption-buttons{ display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+
+  .modal-overlay{
+    position:fixed; inset:0; background:rgba(6,9,7,0.78);
+    display:flex; align-items:center; justify-content:center; padding:20px; z-index:100;
+  }
+  .modal-box{
+    background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:24px; max-width:400px; width:100%;
+  }
+  .modal-box h3{ font-size:15px; margin-bottom:8px; color:var(--text); }
+  .modal-box .modal-sub{ font-size:12.5px; color:var(--text-muted); margin-bottom:16px; line-height:1.5; }
+  .modal-box .drawer-actions{ margin-top:14px; }
+  .modal-forgot{
+    display:block; margin-top:14px; font-size:11.5px; color:var(--text-faint);
+    text-decoration:underline; background:none; border:none; padding:0; cursor:pointer;
+    font-family:var(--body);
+  }
+  .modal-forgot:hover{ color:var(--alert); }
+
   ::-webkit-scrollbar{ width:8px; height:8px; }
   ::-webkit-scrollbar-track{ background:transparent; }
   ::-webkit-scrollbar-thumb{ background:var(--border); border-radius:4px; }
@@ -306,8 +336,16 @@
       </div>
 
       <p class="storage-notice">
-        <strong>Saved on this device.</strong> Keys are stored in this browser's local storage so they're still here next time you visit. They never leave your device — but anyone with access to this browser profile (or malicious scripts on this page) could read them. Prefer passphrase-protected keys, and use <strong>Clear all keys</strong> below on a shared computer.
+        <strong>Saved on this device.</strong> Keys are stored in this browser's local storage so they're still here next time you visit. They never leave your device. By default this storage is plain text — anyone with access to this browser profile could read it. Turn on <strong>storage encryption</strong> below to protect it with your own password, or use <strong>Clear all keys</strong> on a shared computer.
       </p>
+
+      <div class="encryption-status off" id="encryption-status">
+        <span class="enc-dot"></span>
+        <span class="enc-label" id="encryption-status-label">Storage encryption: off</span>
+      </div>
+      <div class="encryption-buttons" id="encryption-buttons">
+        <button class="btn btn-small btn-signal" id="btn-enable-encryption">Enable storage encryption</button>
+      </div>
 
       <div class="keyring-actions">
         <button class="btn btn-primary btn-block" id="btn-open-generate">Generate keypair</button>
@@ -508,16 +546,120 @@
   </footer>
 </div>
 
+<!-- ============ UNLOCK MODAL ============ -->
+<div class="modal-overlay" id="modal-unlock" hidden>
+  <div class="modal-box">
+    <h3>Unlock your keyring</h3>
+    <p class="modal-sub">Your saved keys are encrypted with a password. Enter it to unlock them for this session.</p>
+    <div class="field">
+      <label for="unlock-password">Password</label>
+      <input type="password" id="unlock-password" autocomplete="off">
+    </div>
+    <div class="drawer-actions">
+      <button class="btn btn-primary" id="btn-do-unlock">Unlock</button>
+    </div>
+    <p class="drawer-error" id="unlock-error"></p>
+    <button class="modal-forgot" id="btn-forgot-password">Forgot your password? Delete stored keys and start over</button>
+  </div>
+</div>
+
+<!-- ============ SET / CHANGE PASSWORD MODAL ============ -->
+<div class="modal-overlay" id="modal-set-password" hidden>
+  <div class="modal-box">
+    <h3 id="set-password-title">Set a storage password</h3>
+    <p class="modal-sub" id="set-password-sub">Choose a password to encrypt your saved keys with. This password is never stored anywhere — if you lose it, the saved keys can't be recovered, only deleted.</p>
+    <div class="field">
+      <label for="set-password-1">Password</label>
+      <input type="password" id="set-password-1" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="set-password-2">Confirm password</label>
+      <input type="password" id="set-password-2" autocomplete="off">
+    </div>
+    <div class="drawer-actions">
+      <button class="btn btn-primary" id="btn-do-set-password">Save</button>
+      <button class="btn btn-ghost" id="btn-cancel-set-password">Cancel</button>
+    </div>
+    <p class="drawer-error" id="set-password-error"></p>
+  </div>
+</div>
+
 <script>
 (function(){
   "use strict";
 
-  /* ---------------- storage ---------------- */
+  /* ---------------- storage + encryption ---------------- */
   const STORAGE_KEY = "cipherBureau.keyring.v1";
+  const PBKDF2_ITERATIONS = 300000;
+  const cryptoAvailable = !!(window.crypto && window.crypto.subtle);
 
-  function saveKeyringToStorage(){
+  // Session-only encryption state. The password itself is never stored;
+  // only the derived AES-GCM CryptoKey lives in memory while unlocked.
+  let encryptionEnabled = false;
+  let derivedKey = null;
+  let derivedKeySalt = null; // ArrayBuffer, kept alongside derivedKey so we can re-encrypt on save
+  let pendingEncryptedBlob = null; // set while locked, holds {salt, iv, data, iterations}
+
+  function bufToB64(buf){
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+  function b64ToBuf(b64){
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  async function deriveKeyFromPassword(password, saltBuf, iterations){
+    const keyMaterial = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(password), { name: "PBKDF2" }, false, ["deriveKey"]
+    );
+    return await crypto.subtle.deriveKey(
+      { name: "PBKDF2", salt: saltBuf, iterations: iterations, hash: "SHA-256" },
+      keyMaterial,
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"]
+    );
+  }
+
+  function sanitizeKeyringArray(parsed){
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(k =>
+      k && typeof k === "object" &&
+      typeof k.fingerprint === "string" &&
+      typeof k.publicArmored === "string"
+    ).map(k => ({
+      id: typeof k.id === "string" ? k.id : uid(),
+      fingerprint: k.fingerprint,
+      label: typeof k.label === "string" ? k.label : "Unlabeled key",
+      publicArmored: k.publicArmored,
+      privateArmored: typeof k.privateArmored === "string" ? k.privateArmored : null,
+      hasPrivate: !!k.hasPrivate && typeof k.privateArmored === "string"
+    }));
+  }
+
+  async function saveKeyringToStorage(){
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(keyring));
+      if (encryptionEnabled && derivedKey){
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const plaintext = new TextEncoder().encode(JSON.stringify(keyring));
+        const ciphertextBuf = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, derivedKey, plaintext);
+        const payload = {
+          v: 2,
+          encrypted: true,
+          salt: bufToB64(derivedKeySalt),
+          iv: bufToB64(iv),
+          data: bufToB64(ciphertextBuf),
+          iterations: PBKDF2_ITERATIONS
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(keyring));
+      }
     } catch(e){
       // Storage can fail (quota exceeded, private-browsing restrictions, etc.)
       // Keys still work for this session; just won't persist.
@@ -525,29 +667,24 @@
     }
   }
 
-  function loadKeyringFromStorage(){
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      // Basic shape validation so a corrupted/tampered value can't crash the app.
-      return parsed.filter(k =>
-        k && typeof k === "object" &&
-        typeof k.fingerprint === "string" &&
-        typeof k.publicArmored === "string"
-      ).map(k => ({
-        id: typeof k.id === "string" ? k.id : uid(),
-        fingerprint: k.fingerprint,
-        label: typeof k.label === "string" ? k.label : "Unlabeled key",
-        publicArmored: k.publicArmored,
-        privateArmored: typeof k.privateArmored === "string" ? k.privateArmored : null,
-        hasPrivate: !!k.hasPrivate && typeof k.privateArmored === "string"
-      }));
-    } catch(e){
-      console.warn("Could not load keyring from localStorage:", e);
-      return [];
+  // Inspect what's in storage without needing a password. Returns one of:
+  // { state: "empty" } | { state: "plain", keyring } | { state: "locked", blob }
+  function inspectStorage(){
+    let raw;
+    try { raw = localStorage.getItem(STORAGE_KEY); } catch(e){ return { state: "empty" }; }
+    if (!raw) return { state: "empty" };
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch(e){
+      console.warn("Stored keyring data is corrupted and will be ignored.");
+      return { state: "empty" };
     }
+    if (Array.isArray(parsed)){
+      return { state: "plain", keyring: sanitizeKeyringArray(parsed) };
+    }
+    if (parsed && typeof parsed === "object" && parsed.encrypted){
+      return { state: "locked", blob: parsed };
+    }
+    return { state: "empty" };
   }
 
   /* ---------------- state ---------------- */
@@ -619,7 +756,7 @@
       entry.id = uid();
       keyring.push(entry);
     }
-    saveKeyringToStorage();
+    saveKeyringToStorage(); // fire-and-forget; errors are logged, not thrown
     renderKeyring();
   }
 
@@ -630,14 +767,19 @@
   }
 
   function clearAllKeys(){
-    if (keyring.length === 0) return;
+    if (keyring.length === 0 && !pendingEncryptedBlob) return;
     const confirmed = window.confirm(
-      "Delete all " + keyring.length + " key(s) from this device? This removes them from local storage " +
+      "Delete all saved key(s) from this device? This removes them from local storage " +
       "immediately and can't be undone unless you have a backup."
     );
     if (!confirmed) return;
     keyring = [];
+    encryptionEnabled = false;
+    derivedKey = null;
+    derivedKeySalt = null;
+    pendingEncryptedBlob = null;
     try { localStorage.removeItem(STORAGE_KEY); } catch(e){ /* ignore */ }
+    hideUnlockModal();
     renderKeyring();
   }
 
@@ -670,6 +812,37 @@
     populateRecipientBoxes();
     populateSignSelects();
     populateDecryptSelects();
+    renderEncryptionStatus();
+  }
+
+  function renderEncryptionStatus(){
+    const statusEl = $("encryption-status");
+    const labelEl = $("encryption-status-label");
+    const buttonsEl = $("encryption-buttons");
+
+    if (!cryptoAvailable){
+      statusEl.className = "encryption-status off";
+      labelEl.textContent = "Storage encryption: unavailable in this browser context";
+      buttonsEl.innerHTML = "";
+      return;
+    }
+
+    if (encryptionEnabled){
+      statusEl.className = "encryption-status on";
+      labelEl.textContent = "Storage encryption: on";
+      buttonsEl.innerHTML =
+        '<button class="btn btn-small" id="btn-change-password">Change password</button>' +
+        '<button class="btn btn-small" id="btn-lock-now">Lock now</button>' +
+        '<button class="btn btn-small btn-danger" id="btn-disable-encryption">Disable encryption</button>';
+      $("btn-change-password").addEventListener("click", () => openSetPasswordModal("change"));
+      $("btn-lock-now").addEventListener("click", lockNow);
+      $("btn-disable-encryption").addEventListener("click", disableEncryption);
+    } else {
+      statusEl.className = "encryption-status off";
+      labelEl.textContent = "Storage encryption: off";
+      buttonsEl.innerHTML = '<button class="btn btn-small btn-signal" id="btn-enable-encryption">Enable storage encryption</button>';
+      $("btn-enable-encryption").addEventListener("click", () => openSetPasswordModal("enable"));
+    }
   }
 
   function escapeHtml(str){
@@ -691,6 +864,130 @@
   });
 
   $("btn-clear-all").addEventListener("click", clearAllKeys);
+
+  /* ---------------- unlock modal ---------------- */
+  function showUnlockModal(){
+    $("unlock-password").value = "";
+    hideError($("unlock-error"));
+    $("modal-unlock").hidden = false;
+    $("unlock-password").focus();
+  }
+  function hideUnlockModal(){
+    $("modal-unlock").hidden = true;
+  }
+
+  $("btn-do-unlock").addEventListener("click", async () => {
+    const errEl = $("unlock-error");
+    hideError(errEl);
+    if (!pendingEncryptedBlob){ hideUnlockModal(); return; }
+    const password = $("unlock-password").value;
+    if (!password){ showError(errEl, "Enter your password."); return; }
+    const btn = $("btn-do-unlock");
+    btn.disabled = true; btn.textContent = "Unlocking…";
+    try {
+      const salt = b64ToBuf(pendingEncryptedBlob.salt);
+      const iv = b64ToBuf(pendingEncryptedBlob.iv);
+      const data = b64ToBuf(pendingEncryptedBlob.data);
+      const iterations = pendingEncryptedBlob.iterations || PBKDF2_ITERATIONS;
+      const key = await deriveKeyFromPassword(password, salt, iterations);
+      const plaintextBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, data);
+      const arr = JSON.parse(new TextDecoder().decode(plaintextBuf));
+      keyring = sanitizeKeyringArray(arr);
+      derivedKey = key;
+      derivedKeySalt = salt;
+      encryptionEnabled = true;
+      pendingEncryptedBlob = null;
+      hideUnlockModal();
+      renderKeyring();
+    } catch(e){
+      showError(errEl, "Wrong password, or the stored data is corrupted.");
+    } finally {
+      btn.disabled = false; btn.textContent = "Unlock";
+    }
+  });
+  $("unlock-password").addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") $("btn-do-unlock").click();
+  });
+  $("btn-forgot-password").addEventListener("click", () => {
+    const confirmed = window.confirm(
+      "Without the password, encrypted keys on this device can't be recovered — only deleted. " +
+      "Delete the stored (encrypted) keys and start fresh?"
+    );
+    if (!confirmed) return;
+    clearAllKeys();
+  });
+
+  /* ---------------- set / change password modal ---------------- */
+  let setPasswordMode = "enable"; // "enable" | "change"
+
+  function openSetPasswordModal(mode){
+    setPasswordMode = mode;
+    $("set-password-title").textContent = mode === "change" ? "Change storage password" : "Set a storage password";
+    $("set-password-sub").textContent = mode === "change"
+      ? "Choose a new password. Your keys will be re-encrypted with it immediately."
+      : "Choose a password to encrypt your saved keys with. This password is never stored anywhere — if you lose it, the saved keys can't be recovered, only deleted.";
+    $("set-password-1").value = "";
+    $("set-password-2").value = "";
+    hideError($("set-password-error"));
+    $("modal-set-password").hidden = false;
+    $("set-password-1").focus();
+  }
+  function closeSetPasswordModal(){
+    $("modal-set-password").hidden = true;
+  }
+  $("btn-cancel-set-password").addEventListener("click", closeSetPasswordModal);
+
+  $("btn-do-set-password").addEventListener("click", async () => {
+    const errEl = $("set-password-error");
+    hideError(errEl);
+    const pw1 = $("set-password-1").value;
+    const pw2 = $("set-password-2").value;
+    if (!pw1 || pw1.length < 4){ showError(errEl, "Use a password at least 4 characters long."); return; }
+    if (pw1 !== pw2){ showError(errEl, "Passwords don't match."); return; }
+    const btn = $("btn-do-set-password");
+    btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const key = await deriveKeyFromPassword(pw1, salt, PBKDF2_ITERATIONS);
+      derivedKey = key;
+      derivedKeySalt = salt;
+      encryptionEnabled = true;
+      await saveKeyringToStorage();
+      closeSetPasswordModal();
+      renderKeyring();
+    } catch(e){
+      showError(errEl, "Couldn't set up encryption: " + (e && e.message ? e.message : e));
+    } finally {
+      btn.disabled = false; btn.textContent = "Save";
+    }
+  });
+
+  function lockNow(){
+    if (!encryptionEnabled) return;
+    saveKeyringToStorage().then(() => {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      let blob = null;
+      try { blob = JSON.parse(raw); } catch(e){ /* ignore */ }
+      keyring = [];
+      derivedKey = null;
+      derivedKeySalt = null;
+      pendingEncryptedBlob = blob && blob.encrypted ? blob : null;
+      renderKeyring();
+      if (pendingEncryptedBlob) showUnlockModal();
+    });
+  }
+
+  function disableEncryption(){
+    const confirmed = window.confirm(
+      "Turn off storage encryption? Your saved keys will be rewritten to local storage as plain text."
+    );
+    if (!confirmed) return;
+    encryptionEnabled = false;
+    derivedKey = null;
+    derivedKeySalt = null;
+    saveKeyringToStorage();
+    renderKeyring();
+  }
 
   function safeFilename(str){
     return str.replace(/[^a-z0-9]+/gi, "_").slice(0, 40) || "key";
@@ -1039,8 +1336,25 @@
   }
 
   if (verifyLibraryLoaded()){
-    keyring = loadKeyringFromStorage();
+    const status = inspectStorage();
+    if (status.state === "plain"){
+      keyring = status.keyring;
+      encryptionEnabled = false;
+    } else if (status.state === "locked"){
+      pendingEncryptedBlob = status.blob;
+      encryptionEnabled = false; // becomes true only after a successful unlock
+    }
     renderKeyring();
+    if (status.state === "locked" && cryptoAvailable){
+      showUnlockModal();
+    } else if (status.state === "locked" && !cryptoAvailable){
+      // Can't decrypt without Web Crypto in this context; leave locked/inaccessible
+      // rather than silently discarding the encrypted keys.
+      showUnlockModal();
+      $("unlock-password").disabled = true;
+      $("btn-do-unlock").disabled = true;
+      showError($("unlock-error"), "This browser/context doesn't support Web Crypto here (crypto.subtle is unavailable), so encrypted keys can't be unlocked. Try opening this page over https, or use \"Forgot password\" to delete them.");
+    }
   }
 })();
 </script>
