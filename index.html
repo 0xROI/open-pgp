@@ -121,6 +121,8 @@
   .btn:disabled{ opacity:0.4; cursor:not-allowed; }
   .btn-signal{ border-color:var(--signal); color:var(--signal); }
   .btn-signal:hover{ background:rgba(79,184,166,0.1); }
+  .btn-danger{ border-color:var(--alert); color:var(--alert); }
+  .btn-danger:hover{ background:rgba(192,86,63,0.1); }
 
   .empty-state{
     font-size:12.5px; color:var(--text-faint); border:1px dashed var(--border);
@@ -170,6 +172,14 @@
     padding:8px 10px; border:1px solid rgba(192,86,63,0.4); border-radius:var(--radius);
   }
   .drawer-error.show{ display:block; }
+
+  /* ---------- storage notice ---------- */
+  .storage-notice{
+    font-size:11.5px; color:var(--text-muted); background:var(--bg-raise);
+    border:1px solid var(--border-soft); border-radius:var(--radius);
+    padding:9px 10px; margin-bottom:14px; line-height:1.5;
+  }
+  .storage-notice strong{ color:var(--brass); }
 
   /* ---------- workbench ---------- */
   .workbench{ padding:18px; }
@@ -295,6 +305,10 @@
         <span class="count" id="key-count">0 keys</span>
       </div>
 
+      <p class="storage-notice">
+        <strong>Saved on this device.</strong> Keys are stored in this browser's local storage so they're still here next time you visit. They never leave your device — but anyone with access to this browser profile (or malicious scripts on this page) could read them. Prefer passphrase-protected keys, and use <strong>Clear all keys</strong> below on a shared computer.
+      </p>
+
       <div class="keyring-actions">
         <button class="btn btn-primary btn-block" id="btn-open-generate">Generate keypair</button>
         <button class="btn btn-ghost btn-block" id="btn-open-import">Import key</button>
@@ -303,6 +317,8 @@
       <div id="keyring-list" class="keyring-list">
         <p class="empty-state">No keys yet. Generate one or import an existing key to get started.</p>
       </div>
+
+      <button class="btn btn-danger btn-block btn-small" id="btn-clear-all" style="margin-top:12px;">Clear all keys from this device</button>
 
       <!-- Generate drawer -->
       <div class="drawer" id="drawer-generate" hidden>
@@ -318,7 +334,7 @@
         <div class="field">
           <label for="gen-passphrase">Passphrase</label>
           <input type="password" id="gen-passphrase" placeholder="Protects the private key">
-          <p class="field-hint">Leave blank to generate an unprotected key (not recommended).</p>
+          <p class="field-hint">Leave blank to generate an unprotected key (not recommended, especially now that keys persist on this device).</p>
         </div>
         <div class="drawer-actions">
           <button class="btn btn-primary" id="btn-do-generate">Generate</button>
@@ -487,14 +503,52 @@
   </main>
 
   <footer>
-    <span>Cipher Bureau — built on OpenPGP.js (RFC 9580). Keys live in this tab's memory only and are cleared on reload.</span>
-    <span>Back up any key you can't afford to lose.</span>
+    <span>Cipher Bureau — built on OpenPGP.js (RFC 9580). Keys are saved to this browser's local storage on this device and persist across visits, until you clear them.</span>
+    <span>Back up any key you can't afford to lose — clearing browser data will delete them here too.</span>
   </footer>
 </div>
 
 <script>
 (function(){
   "use strict";
+
+  /* ---------------- storage ---------------- */
+  const STORAGE_KEY = "cipherBureau.keyring.v1";
+
+  function saveKeyringToStorage(){
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(keyring));
+    } catch(e){
+      // Storage can fail (quota exceeded, private-browsing restrictions, etc.)
+      // Keys still work for this session; just won't persist.
+      console.warn("Could not save keyring to localStorage:", e);
+    }
+  }
+
+  function loadKeyringFromStorage(){
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      // Basic shape validation so a corrupted/tampered value can't crash the app.
+      return parsed.filter(k =>
+        k && typeof k === "object" &&
+        typeof k.fingerprint === "string" &&
+        typeof k.publicArmored === "string"
+      ).map(k => ({
+        id: typeof k.id === "string" ? k.id : uid(),
+        fingerprint: k.fingerprint,
+        label: typeof k.label === "string" ? k.label : "Unlabeled key",
+        publicArmored: k.publicArmored,
+        privateArmored: typeof k.privateArmored === "string" ? k.privateArmored : null,
+        hasPrivate: !!k.hasPrivate && typeof k.privateArmored === "string"
+      }));
+    } catch(e){
+      console.warn("Could not load keyring from localStorage:", e);
+      return [];
+    }
+  }
 
   /* ---------------- state ---------------- */
   let keyring = []; // { id, fingerprint, label, publicArmored, privateArmored, hasPrivate }
@@ -565,11 +619,25 @@
       entry.id = uid();
       keyring.push(entry);
     }
+    saveKeyringToStorage();
     renderKeyring();
   }
 
   function removeKey(id){
     keyring = keyring.filter(k => k.id !== id);
+    saveKeyringToStorage();
+    renderKeyring();
+  }
+
+  function clearAllKeys(){
+    if (keyring.length === 0) return;
+    const confirmed = window.confirm(
+      "Delete all " + keyring.length + " key(s) from this device? This removes them from local storage " +
+      "immediately and can't be undone unless you have a backup."
+    );
+    if (!confirmed) return;
+    keyring = [];
+    try { localStorage.removeItem(STORAGE_KEY); } catch(e){ /* ignore */ }
     renderKeyring();
   }
 
@@ -621,6 +689,8 @@
     if (btn.dataset.act === "dl-priv") downloadBlob(key.privateArmored, safeFilename(key.label) + "_private.asc", "application/pgp-keys");
     if (btn.dataset.act === "remove") removeKey(id);
   });
+
+  $("btn-clear-all").addEventListener("click", clearAllKeys);
 
   function safeFilename(str){
     return str.replace(/[^a-z0-9]+/gi, "_").slice(0, 40) || "key";
@@ -969,6 +1039,7 @@
   }
 
   if (verifyLibraryLoaded()){
+    keyring = loadKeyringFromStorage();
     renderKeyring();
   }
 })();
